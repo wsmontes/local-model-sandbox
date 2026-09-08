@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wawasoft.net/local-model-sandbox/schemas/agent-metadata-v1.schema.json",
+  "title": "Agent Metadata v1",
+  "type": "object",
+  "required": ["schema_version", "name", "version", "execution_mode", "runtime", "entrypoint", "contract_version", "model"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "name": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "execution_mode": {"enum": ["local", "cloud", "hybrid"]},
+    "runtime": {"type": "string", "minLength": 1},
+    "entrypoint": {"type": "string", "minLength": 1},
+    "contract_version": {"const": 1},
+    "model": {
+      "type": "object",
+      "required": ["provider", "name"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "environment": {"type": "array", "items": {"type": "string"}},
+    "tags": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

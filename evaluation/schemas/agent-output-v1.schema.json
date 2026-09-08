@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wawasoft.net/local-model-sandbox/schemas/agent-output-v1.schema.json",
+  "title": "Agent Output v1",
+  "type": "object",
+  "required": ["output"],
+  "properties": {
+    "output": {"type": "string"},
+    "model": {"type": "string"},
+    "usage": {"type": "object", "additionalProperties": true},
+    "metadata": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

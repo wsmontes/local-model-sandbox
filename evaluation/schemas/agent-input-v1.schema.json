@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wawasoft.net/local-model-sandbox/schemas/agent-input-v1.schema.json",
+  "title": "Agent Input v1",
+  "type": "object",
+  "required": ["prompt"],
+  "properties": {
+    "prompt": {"type": "string", "minLength": 1},
+    "context": {"type": "array", "default": []},
+    "options": {"type": "object", "default": {}, "additionalProperties": true}
+  },
+  "additionalProperties": true
+}
