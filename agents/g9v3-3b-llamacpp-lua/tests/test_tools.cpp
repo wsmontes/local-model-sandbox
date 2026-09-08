@@ -1,0 +1,6 @@
+#include "tools.hpp"
+#include "test_support.hpp"
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
+int main(){using namespace g9;namespace fs=std::filesystem;auto r=fs::temp_directory_path()/("g9-tools-"+std::to_string(::getpid()));fs::remove_all(r);fs::create_directories(r/"src");std::ofstream(r/"src/a.cpp")<<"alpha\nbeta\nalpha\n";Workspace w(r,Access::read_write,{},{});Guardrails g(GuardrailProfile::balanced);ToolRegistry reg(g);CodingTools t(w);register_file_tools(reg,t);CHECK(reg.execute({"read_file",JsonValue::object{{"path","src/a.cpp"}}}).ok);CHECK(reg.execute({"search_text",JsonValue::object{{"query","beta"}}}).ok);CHECK(reg.execute({"write_file",JsonValue::object{{"path","new.txt"},{"content","hello"}}}).ok);CHECK(reg.execute({"write_file",JsonValue::object{{"path","new.txt"},{"content","bye"},{"overwrite",true}}}).disposition==ToolDisposition::approval_required);CHECK(reg.execute({"replace_text",JsonValue::object{{"path","src/a.cpp"},{"old_text","alpha"},{"new_text","A"},{"expected_occurrences",2}}}).ok);CHECK(reg.execute({"delete_file",JsonValue::object{{"path","new.txt"}}}).disposition==ToolDisposition::approval_required);CHECK(reg.execute({"workspace_status",JsonValue::object{}}).ok);fs::remove_all(r);return test_support::finish();}
