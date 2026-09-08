@@ -5,7 +5,7 @@
 namespace g9 {
 namespace {
 std::string slash(std::filesystem::path p){return p.generic_string();}
-bool beneath(const std::filesystem::path&r,const std::filesystem::path&p){auto ri=r.lexically_normal().begin(),re=r.lexically_normal().end();auto pn=p.lexically_normal();auto pi=pn.begin();for(;ri!=re;++ri,++pi)if(pi==pn.end()||*ri!=*pi)return false;return true;}
+bool beneath(const std::filesystem::path&r,const std::filesystem::path&p){auto rn=r.lexically_normal();auto pn=p.lexically_normal();auto ri=rn.begin(),re=rn.end(),pi=pn.begin();for(;ri!=re;++ri,++pi)if(pi==pn.end()||*ri!=*pi)return false;return true;}
 bool contains(const std::filesystem::path&s,const std::filesystem::path&r){auto sn=s.lexically_normal();if(sn=="."||sn.empty())return true;auto si=sn.begin(),ri=r.begin();for(;si!=sn.end();++si,++ri)if(ri==r.end()||*si!=*ri)return false;return true;}
 bool gm(std::string_view p,size_t pi,std::string_view t,size_t ti){while(pi<p.size()){if(p[pi]=='*'){bool d=pi+1<p.size()&&p[pi+1]=='*';pi+=d?2:1;if(pi==p.size())return d||t.find('/',ti)==std::string_view::npos;for(size_t k=ti;k<=t.size();++k){if(!d&&k>ti&&t[k-1]=='/')break;if(gm(p,pi,t,k))return true;}return false;}if(ti>=t.size())return false;if(p[pi]=='?'){if(t[ti]=='/')return false;++pi;++ti;continue;}if(p[pi]!=t[ti])return false;++pi;++ti;}return ti==t.size();}
 }
