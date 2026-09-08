@@ -20,7 +20,7 @@ Version 0.1 proves the complete local stack:
 ```text
 sandbox JSON contract
         -> C++ application
-        -> embedded Lua policy/configuration
+        -> embedded Lua policy/configuration/prompt rendering
         -> llama.cpp
         -> local G9v3-3B GGUF
         -> JSON response
@@ -30,9 +30,10 @@ Version 0.1 includes:
 
 - C++20 application core;
 - embedded Lua for configuration and agent behavior;
+- G9v3-specific prompt rendering implemented in Lua from the upstream template semantics;
 - direct `libllama` integration, not a `llama-cli` subprocess;
 - local GGUF model loading only;
-- chat prompt formatting using the chat template embedded in the GGUF when supported by `llama.cpp`;
+- thinking/non-thinking prompt selection in Lua;
 - sampling controlled by Lua configuration;
 - repository contract v1 over stdin/stdout;
 - deterministic error handling and structured diagnostics;
@@ -50,7 +51,7 @@ Version 0.1 explicitly does not include:
 - tool execution or autonomous tool loops;
 - vector databases, RAG, persistence, or memory stores;
 - a network sandbox implementation;
-- generic switching between thinking and non-thinking prompt templates;
+- a generic chat-template engine for arbitrary models;
 - a shared repository runtime library.
 
 ## 3. Non-negotiable isolation rule
@@ -79,17 +80,25 @@ repository: https://github.com/ggml-org/llama.cpp
 commit: f3f1a8f2760f28325a5ec20c05b171e5b7c83a29
 ```
 
-The implementation targets the C API available at that revision, including the current model/context/sampler APIs such as:
+The implementation targets the C API available at that revision, including:
 
 - `llama_model_load_from_file`;
 - `llama_model_get_vocab`;
 - `llama_init_from_model`;
+- `llama_tokenize`;
 - `llama_decode`;
-- `llama_sampler_*`;
-- `llama_model_chat_template`;
-- `llama_chat_apply_template`.
+- `llama_token_to_piece`;
+- `llama_vocab_is_eog`;
+- `llama_sampler_chain_init`;
+- `llama_sampler_init_penalties`;
+- `llama_sampler_init_top_k`;
+- `llama_sampler_init_top_p`;
+- `llama_sampler_init_min_p`;
+- `llama_sampler_init_temp`;
+- `llama_sampler_init_dist`;
+- `llama_sampler_sample`.
 
-The revision is pinned in documentation because `llama.cpp` evolves quickly. A newer revision may work but is not the v0.1 reproducibility baseline.
+The revision is pinned because `llama.cpp` evolves quickly. A newer revision may work but is not the v0.1 reproducibility baseline.
 
 ### Lua
 
@@ -121,7 +130,7 @@ approximate size: 1.90 GB
 
 The GGUF repository describes Q4_K_M as a recommended/default-size quantization. The binary model file is not committed to this repository.
 
-The runtime default context remains 8192 tokens rather than attempting the model's theoretical maximum. Users may raise it in Lua based on available memory and the capabilities of the chosen llama.cpp build.
+The runtime default context is 8192 tokens rather than attempting the model's theoretical maximum. Users may raise it in Lua based on available memory and the capabilities of the chosen llama.cpp build.
 
 ## 5. Target file structure
 
@@ -165,8 +174,10 @@ agents/g9v3-3b-llamacpp-lua/
 │
 └── third_party/
     ├── README.md
-    ├── llama.cpp/        # optional local source checkout, gitignored contents
-    └── lua/              # optional local Lua source tree, gitignored contents
+    ├── llama.cpp/
+    │   └── .gitkeep
+    └── lua/
+        └── .gitkeep
 ```
 
 The project will not assign a license to the user's new agent source code implicitly. `THIRD_PARTY.md` records the licenses and source identities of external dependencies and model artifacts. A project `LICENSE` can be added later if the repository owner chooses one explicitly.
@@ -184,12 +195,15 @@ Coordinates one request lifecycle:
 1. resolve agent-local paths;
 2. load Lua policy/configuration;
 3. parse one JSON request from stdin;
-4. run Lua request hooks and message construction;
-5. initialize/load the local llama.cpp runtime;
-6. build the chat prompt;
-7. generate the completion;
-8. run Lua response postprocessing;
-9. serialize exactly one JSON response to stdout.
+4. run Lua request hooks;
+5. ask Lua for the semantic message list;
+6. ask Lua to render the G9v3 prompt text;
+7. obtain effective generation settings from Lua;
+8. initialize/load the local llama.cpp runtime;
+9. tokenize/evaluate the rendered prompt;
+10. generate the completion;
+11. run Lua response postprocessing;
+12. serialize exactly one JSON response to stdout.
 
 ### `contract.*`
 
@@ -221,22 +235,22 @@ struct AgentResponse {
 
 A small self-contained JSON parser/serializer for the contract boundary.
 
-It must support the complete JSON value set needed by the contract:
+It supports:
 
 - null;
 - booleans;
-- numbers;
-- strings with escaping and Unicode escape decoding;
+- finite JSON numbers;
+- strings with escaping and Unicode escape decoding, including UTF-16 surrogate pairs;
 - arrays;
 - objects.
 
-The parser must reject malformed input, trailing garbage, invalid escape sequences, and structurally invalid contract requests. No external JSON package is introduced in v0.1.
+The parser rejects malformed input, duplicate syntax errors, invalid number forms, trailing garbage, invalid escape sequences, invalid surrogate pairs, and structurally invalid contract requests. No external JSON package is introduced in v0.1.
 
 ### `lua_agent.*`
 
 Owns Lua VM lifecycle and the C++/Lua boundary.
 
-It loads `config/agent.lua`, validates the returned table, reads typed configuration, converts request/context data into Lua values, invokes supported hooks, and converts Lua-produced message/response structures back to C++.
+It loads `config/agent.lua`, validates the returned table, reads typed configuration, converts request/context data into Lua values, invokes supported hooks, and converts Lua-produced structures back to C++.
 
 Lua errors are captured with useful stack/error text and returned as application errors without crashing the process.
 
@@ -250,8 +264,7 @@ Responsibilities:
 - local model loading;
 - vocabulary access;
 - context creation;
-- chat-template application;
-- tokenization;
+- tokenization of the already-rendered G9v3 prompt;
 - prompt evaluation;
 - sampler construction;
 - token generation;
@@ -260,7 +273,7 @@ Responsibilities:
 - prompt/completion token accounting;
 - cleanup.
 
-It must not contain agent personality/policy decisions.
+It does not contain G9v3 prompt syntax, system-prompt policy, or other agent personality decisions.
 
 ## 7. Lua contract
 
@@ -280,12 +293,14 @@ agent.model = {
 }
 
 agent.generation = {
+    thinking = false,
     max_tokens = 512,
     temperature = 0.7,
     top_p = 0.95,
     top_k = 40,
     min_p = 0.0,
     repeat_penalty = 1.0,
+    repeat_last_n = 64,
     seed = -1
 }
 
@@ -326,6 +341,44 @@ function agent.build_messages(request)
     return messages
 end
 
+local function append_message(parts, message)
+    local role = message.role
+    local content = message.content or ""
+
+    table.insert(parts, "<|im_start|>" .. role .. "\n")
+
+    if role == "assistant" and
+       not string.find(content, "<think>", 1, true) and
+       not string.find(content, "</think>", 1, true) then
+        table.insert(parts, "<think>\n\n</think>\n\n")
+    end
+
+    table.insert(parts, content)
+    table.insert(parts, "<|im_end|>\n")
+end
+
+function agent.render_prompt(messages)
+    local parts = {}
+
+    for _, message in ipairs(messages) do
+        append_message(parts, message)
+    end
+
+    table.insert(parts, "<|im_start|>assistant\n")
+
+    if agent.generation.thinking then
+        table.insert(parts, "<think>\n")
+    else
+        table.insert(parts, "<think>\n\n</think>\n\n")
+    end
+
+    return table.concat(parts)
+end
+
+function agent.generation_settings(request)
+    return agent.generation
+end
+
 function agent.after_response(response)
     return response
 end
@@ -333,61 +386,99 @@ end
 return agent
 ```
 
+The default renderer is intentionally a model-specific subset of the upstream G9v3 chat template. v0.1 supports normal system/user/assistant conversational messages but not tool-call branches from the upstream template.
+
 ### Supported hooks
 
 #### `before_prompt(request)`
 
-Optional. Receives a Lua request table and may return a replacement request table. It is intended for local normalization/policy, not I/O.
+Optional. Receives a Lua request table and may return a replacement request table.
 
 #### `build_messages(request)`
 
-Required in the default policy. Returns an ordered array of chat messages:
+Required in the default policy. Returns an ordered array of chat messages. Accepted v0.1 roles are `system`, `user`, and `assistant`.
 
-```lua
-{
-    { role = "system", content = "..." },
-    { role = "user", content = "..." }
-}
+#### `render_prompt(messages)`
+
+Required. Converts semantic messages into the exact text tokenized by llama.cpp. This is where model-specific prompt syntax lives.
+
+The default G9v3 renderer mirrors the relevant upstream template behavior:
+
+- ChatML-style `<|im_start|>` / `<|im_end|>` message boundaries;
+- assistant generation begins at `<|im_start|>assistant\n`;
+- non-thinking mode inserts an empty `<think>\n\n</think>\n\n` block;
+- thinking mode starts an open `<think>\n` block;
+- historical assistant messages without explicit think markup receive an empty think block before their visible content.
+
+#### `generation_settings(request)`
+
+Required by the default policy. Returns the effective sampling/runtime generation table, allowing future request-aware settings without recompiling C++.
+
+The upstream recommendations are:
+
+```text
+thinking=false: temperature=0.7, top_p=0.95
+thinking=true:  temperature=0.9, top_p=0.95
 ```
 
-For v0.1, accepted roles are `system`, `user`, and `assistant`.
+The shipped default is non-thinking. If a user switches `thinking=true`, the README instructs them to use the upstream 0.9 temperature recommendation unless they deliberately want a different experiment.
 
 #### `after_response(response)`
 
 Optional. Receives a Lua table containing generated text plus metadata and may return a replacement response table. The C++ layer still enforces the final sandbox output contract.
 
-### Deliberately unavailable Lua capabilities
+### Restricted Lua environment
 
-The C++ host will open only the standard Lua libraries needed for configuration and pure computation. Runtime design must not expose custom socket, HTTP, process-execution, or filesystem helper APIs.
+Lua is an agent policy language, not an escape hatch around the offline design.
 
-Lua's normal standard-library capabilities are not claimed to be an operating-system security boundary. The project's offline guarantee is architectural: the shipped C++ application contains no networking code and the provided policy performs no network I/O. Hard OS-level network sandboxing is outside v0.1.
+The host explicitly opens only:
 
-## 8. Prompt formatting and thinking mode
+- base library;
+- table library;
+- string library;
+- math library;
+- UTF-8 library.
 
-Lua owns the semantic list of messages. C++ owns conversion of those messages into the model-specific text prompt.
+It does not open:
 
-Preferred flow:
+- `io`;
+- `os`;
+- `package`;
+- `debug`.
 
-```text
-Lua messages
-    -> llama_chat_message[]
-    -> llama_model_chat_template(model, nullptr)
-    -> llama_chat_apply_template(..., add_assistant=true)
-    -> formatted prompt
+After opening the base library, the host removes `print`, `dofile`, `loadfile`, and `load` from the global environment. `require` is unavailable because `package` is not opened.
+
+The host exposes one custom function:
+
+```lua
+log("message")
 ```
 
-If the loaded model has no usable chat template, generation fails with a clear error in v0.1 rather than silently applying a generic template that may be wrong for the model.
+which writes a prefixed line to stderr only. Lua cannot write contract-breaking text to stdout through the shipped API.
 
-The upstream Transformers example exposes an `enable_thinking` template variable, but the baseline `llama_chat_apply_template` C API does not provide a generic mechanism for passing arbitrary Jinja variables. Therefore v0.1 does not expose a Lua `thinking=true/false` switch that might be semantically ineffective.
+This is capability reduction, not an OS security boundary. Hard process sandboxing remains outside v0.1.
 
-The default generation parameters follow the upstream non-thinking recommendation where applicable:
+## 8. G9v3 prompt fidelity and thinking mode
+
+The upstream `chat_template.jinja` contains model-specific tool branches and thinking behavior. In particular, for a new assistant generation it conditionally emits:
 
 ```text
-temperature = 0.7
-top_p = 0.95
+thinking=false -> <think>\n\n</think>\n\n
+thinking=true  -> <think>\n
 ```
 
-Thinking-mode support is a later experiment after inspecting and validating the exact GGUF template behavior with the pinned llama.cpp revision.
+after the assistant message prefix.
+
+The public `llama_chat_apply_template` C interface at the pinned llama.cpp revision does not expose a generic arbitrary-Jinja-variable map equivalent to Transformers' `enable_thinking` argument. Using it without controlling that variable would make the intended non-thinking semantics ambiguous.
+
+Therefore the first agent deliberately renders its G9v3 prompt in Lua rather than relying on generic llama.cpp chat-template application.
+
+This design has two advantages:
+
+1. the G9v3-specific behavior is explicit and testable;
+2. model policy remains in Lua, matching the project's goal that configurable agent behavior live outside the C++ inference engine.
+
+The renderer is not advertised as a complete clone of the upstream tool-calling template. Tool branches are deferred until tool calling itself becomes an experiment goal.
 
 ## 9. llama.cpp generation design
 
@@ -398,31 +489,47 @@ The implementation follows the direct C API pattern demonstrated by current llam
 3. set `n_gpu_layers` from Lua;
 4. call `llama_model_load_from_file()` with the local GGUF path;
 5. obtain vocabulary using `llama_model_get_vocab()`;
-6. format and tokenize the prompt;
+6. tokenize the Lua-rendered prompt with `llama_tokenize()`;
 7. create `llama_context_params` using Lua context/batch settings;
 8. create context with `llama_init_from_model()`;
 9. evaluate the prompt with `llama_decode()`;
 10. sample one token at a time through a `llama_sampler` chain;
 11. stop at EOG or `max_tokens`;
-12. convert sampled tokens to output text;
+12. convert sampled tokens with `llama_token_to_piece()`;
 13. free sampler, context, and model through RAII wrappers.
 
-The initial sampler chain supports:
+The initial sampler chain is explicitly based on APIs present at the pinned revision:
 
-- temperature;
-- top-k;
-- top-p;
-- min-p when available at the pinned revision;
-- repeat penalty;
-- deterministic/random seed behavior.
+```text
+llama_sampler_init_penalties(...)
+llama_sampler_init_top_k(top_k)
+llama_sampler_init_top_p(top_p, 1)
+llama_sampler_init_min_p(min_p, 1)
+llama_sampler_init_temp(temperature)
+llama_sampler_init_dist(seed)
+```
 
-The implementation plan must confirm exact sampler function signatures against the pinned `llama.h` before code is written.
+`seed < 0` maps to `LLAMA_DEFAULT_SEED`; non-negative seeds are converted to the unsigned seed type expected by the sampler.
+
+The penalties sampler uses:
+
+```text
+n_vocab = llama_vocab_n_tokens(vocab)
+penalty_last_n = repeat_last_n
+penalty_repeat = repeat_penalty
+penalty_freq = 0.0
+penalty_present = 0.0
+```
+
+Samplers whose configured values disable their effect may still be added when llama.cpp defines them as no-ops, or may be omitted; this must not alter output semantics.
 
 ## 10. Runtime paths
 
 All default paths resolve relative to the agent directory, not the caller's current working directory.
 
-`run.sh` determines its own directory and executes the built binary from there. The C++ application receives or derives the agent root and resolves:
+`run.sh` determines its own directory and executes the built binary from there. It passes the absolute agent root to the executable using a command-line argument reserved for the launcher, not an environment dependency.
+
+The C++ application resolves:
 
 ```text
 config/agent.lua
@@ -451,7 +558,7 @@ Normal offline configuration searches in this order:
 
 If a required source tree is absent, CMake fails with a clear provisioning message. It never downloads the dependency automatically.
 
-Lua is compiled into the agent build as a static library from the supplied source tree. llama.cpp is included using its CMake project and linked directly to the agent executable.
+Lua is compiled into the agent build as a static library from the supplied Lua 5.4 source directory, excluding the standalone interpreter/compiler entrypoints (`lua.c` and `luac.c`). llama.cpp is included using its CMake project and linked directly to the agent executable.
 
 Baseline build requirements:
 
@@ -462,36 +569,49 @@ Baseline build requirements:
 
 Initial CMake presets:
 
-- `cpu-release` — portable CPU-oriented release build;
-- `native-release` — release build that allows local/native compiler optimization;
-- GPU-specific build flags remain explicit CMake cache options rather than being silently enabled.
+- `cpu-release` — release build with GPU backends disabled where practical through llama.cpp CMake options;
+- `native-release` — release build allowing the platform's default/local llama.cpp backend selection and native optimization.
 
-## 12. Model provisioning
+GPU-specific experiments beyond those presets remain explicit CMake cache settings rather than hidden downloads or runtime detection services.
 
-`models/` never contains a tracked GGUF weight file.
+## 12. Model and dependency provisioning
 
-`models/README.md` documents two phases:
+`models/` never contains a tracked GGUF weight file. `third_party/llama.cpp/` and `third_party/lua/` likewise do not vendor full external source trees into this repository by default.
+
+The agent-local `.gitignore` ignores:
+
+```text
+build/
+models/*.gguf
+third_party/llama.cpp/*
+third_party/lua/*
+```
+
+while preserving the `.gitkeep` placeholders and documentation.
 
 ### Connected provisioning phase
 
-On a machine that has internet access, obtain:
+Before entering an air-gapped environment, obtain:
 
 ```text
-bartowski/ai9stars_G9v3-3B-GGUF
-ai9stars_G9v3-3B-Q4_K_M.gguf
+llama.cpp commit f3f1a8f2760f28325a5ec20c05b171e5b7c83a29
+Lua 5.4.9 source
+bartowski/ai9stars_G9v3-3B-GGUF / ai9stars_G9v3-3B-Q4_K_M.gguf
 ```
 
-and copy it to:
+Then either place sources under the agent's `third_party/` directories or keep them in arbitrary local paths and pass those paths to CMake.
+
+Place the model at:
 
 ```text
 models/ai9stars_G9v3-3B-Q4_K_M.gguf
 ```
 
-The documentation may provide example download commands for convenience, but no download command is executed by the agent or its build scripts.
+Documentation may provide example download commands, but no download command is executed by the agent or its build scripts.
 
-### Offline runtime phase
+### Offline build/runtime phase
 
-Once dependencies and model weights are present, configuring, compiling, testing, and running the agent must not require internet access.
+Once dependencies and model weights are present, configuring, compiling, unit testing, model smoke testing, and running the agent require no internet access.
 
 ## 13. Sandbox contract behavior
 
@@ -518,6 +638,8 @@ Accepted optional fields:
 }
 ```
 
+`context` is exposed to Lua as JSON-derived values. The shipped `build_messages` uses context items that contain string `role` and string `content` fields. Other context shapes remain available to custom Lua policy.
+
 In v0.1, `options` is preserved and exposed to Lua but does not directly override native generation settings unless Lua explicitly chooses to use it.
 
 Success output:
@@ -533,14 +655,17 @@ Success output:
   "metadata": {
     "agent": "g9v3-3b-llamacpp-lua",
     "runtime": "llama.cpp",
-    "contract_version": 1
+    "contract_version": 1,
+    "thinking": false
   }
 }
 ```
 
 `stdout` contains only the final JSON object and a trailing newline.
 
-Diagnostics, model-loading progress, timing, and errors go to `stderr`.
+Diagnostics, Lua `log()` output, model-loading progress, timing, and errors go to `stderr`.
+
+llama.cpp logging is redirected/configured so library logs cannot contaminate stdout.
 
 ## 14. Errors and exit codes
 
@@ -551,9 +676,9 @@ Baseline exit codes:
 ```text
 0  success
 2  invalid stdin JSON or invalid contract request
-3  Lua configuration/hook failure
+3  Lua configuration/hook/prompt-render failure
 4  model file missing or model-load failure
-5  chat-template/tokenization/context failure
+5  tokenization/context failure
 6  inference/generation failure
 10 internal/unexpected failure
 ```
@@ -590,15 +715,16 @@ This deliberately favors correctness and testability over amortized model-loadin
 
 ### Pure unit tests
 
-Tests must run without model weights and without network access.
+Tests require the locally provisioned source dependencies but do not require model weights or network access.
 
 `test_json.cpp` covers:
 
 - all JSON primitive types;
 - nested arrays/objects;
 - escaping;
-- Unicode escapes;
+- Unicode escapes and surrogate pairs;
 - malformed/truncated input;
+- malformed numbers;
 - trailing garbage;
 - serialization round-trips.
 
@@ -618,25 +744,35 @@ Tests must run without model weights and without network access.
 - typed model/generation settings;
 - `before_prompt` transformation;
 - context-to-message construction;
+- exact non-thinking G9v3 prompt rendering;
+- exact thinking G9v3 prompt rendering;
+- assistant-history rendering;
+- `generation_settings` values;
 - `after_response` transformation;
 - Lua syntax/runtime errors;
-- malformed configuration tables.
+- malformed configuration tables;
+- absence of `io`, `os`, `package`, `debug`, `print`, `dofile`, `loadfile`, and `load`;
+- `log()` writing only through the host's stderr callback.
 
 ### Build integration test
 
-CMake/CTest must build the executable and unit-test binary against locally supplied Lua and llama.cpp source trees.
+CMake/CTest builds the executable and unit-test binary against locally supplied Lua and llama.cpp source trees.
 
 ### Model smoke test
 
 A separate opt-in test is documented for environments where the GGUF is present. It sends a tiny contract request and validates:
 
 - successful local model load;
-- valid chat formatting/tokenization;
+- G9v3 prompt tokenization;
 - generation of at least one completion token;
 - parseable contract-v1 JSON output;
-- zero network dependency.
+- no non-JSON stdout contamination.
 
 The smoke test is not part of the default unit suite because the repository does not store the ~1.90 GB model.
+
+### Offline verification
+
+Deployment/testing documentation includes a final manual check: run configure, build, unit tests, and the model smoke test with network disabled after all provisioning is complete. No step is allowed to attempt automatic fetching.
 
 ## 17. Agent metadata
 
@@ -666,15 +802,15 @@ No API key or network-related environment variable is required.
 
 ## 18. Security/offline interpretation
 
-The agent itself contains no networking implementation and requires no network service. It does not bind ports, open HTTP clients, fetch remote files, or call cloud APIs.
+The shipped agent contains no networking implementation and requires no network service. It does not bind ports, open HTTP clients, fetch remote files, call cloud APIs, or expose process-execution helpers to Lua.
 
-This is distinct from claiming that the process is cryptographically or OS-enforced incapable of networking. C/C++ and Lua execute as the current OS user, and an OS-level air-gap/firewall/sandbox remains an external deployment property.
+This is distinct from claiming that the process is cryptographically or OS-enforced incapable of networking. C/C++ executes as the current OS user, and an OS-level air-gap/firewall/sandbox remains an external deployment property.
 
-For the project's intended offline tests, the relevant success criterion is stronger and simpler: with dependencies and GGUF already provisioned, unplugging network access must not change build/test/runtime behavior.
+For this experiment, the concrete offline criterion is: with dependency sources and the GGUF already provisioned, disabling network access does not change configure/build/test/runtime behavior.
 
 ## 19. Documentation deliverables
 
-The agent README must explain:
+The agent README explains:
 
 1. architecture and Lua/C++ split;
 2. exact dependency baselines;
@@ -682,11 +818,12 @@ The agent README must explain:
 4. offline build commands;
 5. CPU build first-run commands;
 6. optional GPU configuration pointers without assuming one platform;
-7. Lua configuration reference;
-8. sandbox stdin/stdout examples;
-9. test commands;
-10. copying the directory outside the repository;
-11. known v0.1 limitations.
+7. Lua configuration and hook reference;
+8. G9v3 prompt renderer and thinking toggle;
+9. sandbox stdin/stdout examples;
+10. test commands;
+11. copying the directory outside the repository;
+12. known v0.1 limitations.
 
 `THIRD_PARTY.md` records at least:
 
@@ -707,8 +844,8 @@ The implementation is successful when:
 - unit tests pass without the GGUF;
 - the opt-in smoke test works when the GGUF is locally present;
 - the executable consumes contract-v1 JSON on stdin and emits contract-v1 JSON on stdout;
-- stdout contains no llama.cpp logs or non-JSON chatter;
-- Lua can change system prompt, message construction, and generation parameters without recompiling C++;
+- stdout contains no llama.cpp or Lua logs or non-JSON chatter;
+- Lua can change system prompt, message construction, prompt rendering, thinking mode, and generation parameters without recompiling C++;
 - direct llama.cpp C API inference is used rather than a CLI subprocess;
 - copying only the agent directory does not introduce references to repository sibling directories;
 - network disconnection does not affect normal build/test/run after provisioning.
@@ -717,10 +854,10 @@ The implementation is successful when:
 
 Potential later agents or versions may explore:
 
-- tool-calling and a Lua-managed tool loop;
+- complete G9v3 tool-calling template support and a Lua-managed tool loop;
 - persistent model process / interactive REPL;
 - structured/grammar-constrained outputs;
-- validated thinking-mode control;
+- generic model chat-template abstraction;
 - model/runtime benchmarking adapters;
 - Metal, CUDA, Vulkan, SYCL, or other backend-specific presets;
 - memory/RAG;
@@ -732,6 +869,7 @@ These are deliberately not required to prove v0.1.
 ## 22. Reference material used for the design
 
 - G9v3-3B model: `https://huggingface.co/ai9stars/G9v3-3B`
+- G9v3-3B upstream prompt template: `https://huggingface.co/ai9stars/G9v3-3B/blob/main/chat_template.jinja`
 - G9v3-3B GGUF quantizations: `https://huggingface.co/bartowski/ai9stars_G9v3-3B-GGUF`
 - llama.cpp: `https://github.com/ggml-org/llama.cpp`
 - pinned llama.cpp revision: `f3f1a8f2760f28325a5ec20c05b171e5b7c83a29`
