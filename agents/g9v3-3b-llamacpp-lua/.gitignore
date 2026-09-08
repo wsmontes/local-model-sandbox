@@ -5,3 +5,5 @@
 /third_party/lua/*
 !/third_party/lua/.gitkeep
 *.log
+*.tmp
+.DS_Store

@@ -8,6 +8,15 @@ contract_version: 1
 model:
   provider: ai9stars
   name: G9v3-3B
+  format: GGUF
+  default_file: models/ai9stars_G9v3-3B-Q4_K_M.gguf
+runtime_pins:
+  lua: 5.4.9
+  llama_cpp_commit: f3f1a8f2760f28325a5ec20c05b171e5b7c83a29
+offline:
+  automatic_downloads: false
+  cloud_fallback: false
+  telemetry: false
 environment: []
 tags:
   - cpp
