@@ -197,7 +197,7 @@ Coordinates one request lifecycle:
 3. parse one JSON request from stdin;
 4. run Lua request hooks;
 5. ask Lua for the semantic message list;
-6. ask Lua to render the G9v3 prompt text;
+6. ask Lua to render the complete G9v3 prompt text, including BOS;
 7. obtain effective generation settings from Lua;
 8. initialize/load the local llama.cpp runtime;
 9. tokenize/evaluate the rendered prompt;
@@ -244,7 +244,7 @@ It supports:
 - arrays;
 - objects.
 
-The parser rejects malformed input, duplicate syntax errors, invalid number forms, trailing garbage, invalid escape sequences, invalid surrogate pairs, and structurally invalid contract requests. No external JSON package is introduced in v0.1.
+The parser rejects malformed input, invalid number forms, trailing garbage, invalid escape sequences, invalid surrogate pairs, duplicate object keys, and structurally invalid contract requests. No external JSON package is introduced in v0.1.
 
 ### `lua_agent.*`
 
@@ -358,7 +358,7 @@ local function append_message(parts, message)
 end
 
 function agent.render_prompt(messages)
-    local parts = {}
+    local parts = { "<s>" }
 
     for _, message in ipairs(messages) do
         append_message(parts, message)
@@ -404,7 +404,8 @@ Required. Converts semantic messages into the exact text tokenized by llama.cpp.
 
 The default G9v3 renderer mirrors the relevant upstream template behavior:
 
-- ChatML-style `<|im_start|>` / `<|im_end|>` message boundaries;
+- begins with the model's BOS token text `<s>`;
+- uses ChatML-style `<|im_start|>` / `<|im_end|>` message boundaries;
 - assistant generation begins at `<|im_start|>assistant\n`;
 - non-thinking mode inserts an empty `<think>\n\n</think>\n\n` block;
 - thinking mode starts an open `<think>\n` block;
@@ -460,7 +461,9 @@ This is capability reduction, not an OS security boundary. Hard process sandboxi
 
 ## 8. G9v3 prompt fidelity and thinking mode
 
-The upstream `chat_template.jinja` contains model-specific tool branches and thinking behavior. In particular, for a new assistant generation it conditionally emits:
+The upstream `chat_template.jinja` begins with `bos_token` and contains model-specific tool branches and thinking behavior. The upstream tokenizer configuration identifies the BOS token as `<s>` and declares `add_bos_token=false`.
+
+For a new assistant generation, the upstream template conditionally emits:
 
 ```text
 thinking=false -> <think>\n\n</think>\n\n
@@ -473,12 +476,16 @@ The public `llama_chat_apply_template` C interface at the pinned llama.cpp revis
 
 Therefore the first agent deliberately renders its G9v3 prompt in Lua rather than relying on generic llama.cpp chat-template application.
 
-This design has two advantages:
+The renderer includes `<s>` explicitly. C++ tokenizes the resulting complete prompt with:
 
-1. the G9v3-specific behavior is explicit and testable;
-2. model policy remains in Lua, matching the project's goal that configurable agent behavior live outside the C++ inference engine.
+```text
+add_special = false
+parse_special = true
+```
 
-The renderer is not advertised as a complete clone of the upstream tool-calling template. Tool branches are deferred until tool calling itself becomes an experiment goal.
+This prevents both missing BOS and accidental double insertion while still allowing llama.cpp to recognize `<s>`, `<|im_start|>`, and `<|im_end|>` as special-token text from the model vocabulary.
+
+This design also keeps the model-specific behavior explicit and testable in Lua. The renderer is not advertised as a complete clone of the upstream tool-calling template; tool branches are deferred until tool calling itself becomes an experiment goal.
 
 ## 9. llama.cpp generation design
 
@@ -489,7 +496,7 @@ The implementation follows the direct C API pattern demonstrated by current llam
 3. set `n_gpu_layers` from Lua;
 4. call `llama_model_load_from_file()` with the local GGUF path;
 5. obtain vocabulary using `llama_model_get_vocab()`;
-6. tokenize the Lua-rendered prompt with `llama_tokenize()`;
+6. tokenize the complete Lua-rendered prompt using `llama_tokenize(..., add_special=false, parse_special=true)`;
 7. create `llama_context_params` using Lua context/batch settings;
 8. create context with `llama_init_from_model()`;
 9. evaluate the prompt with `llama_decode()`;
@@ -725,6 +732,7 @@ Tests require the locally provisioned source dependencies but do not require mod
 - Unicode escapes and surrogate pairs;
 - malformed/truncated input;
 - malformed numbers;
+- duplicate object keys;
 - trailing garbage;
 - serialization round-trips.
 
@@ -744,8 +752,8 @@ Tests require the locally provisioned source dependencies but do not require mod
 - typed model/generation settings;
 - `before_prompt` transformation;
 - context-to-message construction;
-- exact non-thinking G9v3 prompt rendering;
-- exact thinking G9v3 prompt rendering;
+- exact non-thinking G9v3 prompt rendering, including leading `<s>`;
+- exact thinking G9v3 prompt rendering, including leading `<s>`;
 - assistant-history rendering;
 - `generation_settings` values;
 - `after_response` transformation;
@@ -763,7 +771,7 @@ CMake/CTest builds the executable and unit-test binary against locally supplied 
 A separate opt-in test is documented for environments where the GGUF is present. It sends a tiny contract request and validates:
 
 - successful local model load;
-- G9v3 prompt tokenization;
+- G9v3 prompt tokenization with the explicit BOS preserved exactly once;
 - generation of at least one completion token;
 - parseable contract-v1 JSON output;
 - no non-JSON stdout contamination.
@@ -846,6 +854,7 @@ The implementation is successful when:
 - the executable consumes contract-v1 JSON on stdin and emits contract-v1 JSON on stdout;
 - stdout contains no llama.cpp or Lua logs or non-JSON chatter;
 - Lua can change system prompt, message construction, prompt rendering, thinking mode, and generation parameters without recompiling C++;
+- the G9v3 prompt begins with exactly one explicit BOS and uses the documented thinking/non-thinking prefix;
 - direct llama.cpp C API inference is used rather than a CLI subprocess;
 - copying only the agent directory does not introduce references to repository sibling directories;
 - network disconnection does not affect normal build/test/run after provisioning.
@@ -870,6 +879,7 @@ These are deliberately not required to prove v0.1.
 
 - G9v3-3B model: `https://huggingface.co/ai9stars/G9v3-3B`
 - G9v3-3B upstream prompt template: `https://huggingface.co/ai9stars/G9v3-3B/blob/main/chat_template.jinja`
+- G9v3-3B tokenizer configuration: `https://huggingface.co/ai9stars/G9v3-3B/blob/main/tokenizer_config.json`
 - G9v3-3B GGUF quantizations: `https://huggingface.co/bartowski/ai9stars_G9v3-3B-GGUF`
 - llama.cpp: `https://github.com/ggml-org/llama.cpp`
 - pinned llama.cpp revision: `f3f1a8f2760f28325a5ec20c05b171e5b7c83a29`
