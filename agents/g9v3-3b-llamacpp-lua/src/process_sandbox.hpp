@@ -14,4 +14,4 @@ public:
  void apply_in_child() const;
 private: SandboxMode mode_=SandboxMode::off;SandboxCapabilities caps_;std::filesystem::path workspace_,agent_root_,temp_root_;int landlock_abi_=0;
 };
-} // namespace g9
+}

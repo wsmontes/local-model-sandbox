@@ -1,0 +1,4 @@
+#include "cli.hpp"
+#include "test_support.hpp"
+#include <vector>
+using namespace g9;static CliOptions parse(std::vector<std::string>a){std::vector<char*>v;for(auto&s:a)v.push_back(s.data());return parse_cli((int)v.size(),v.data());}int main(){auto a=parse({"g9-agent","--workspace",".","--profile","review","--scope","src:r","--thinking","on"});CHECK(a.mode==InvocationMode::chat);CHECK(a.profile&&*a.profile==GuardrailProfile::review);CHECK_EQ(a.scopes.size(),1u);CHECK(a.scopes[0].access==Access::read);CHECK(a.thinking&&*a.thinking);auto b=parse({"g9-agent","run","--json","--command-sandbox","off"});CHECK(b.mode==InvocationMode::json_run);CHECK(b.command_sandbox&&*b.command_sandbox==SandboxMode::off);CHECK_THROWS(parse({"g9-agent","run"}));CHECK_THROWS(parse({"g9-agent","--scope","bad"}));return test_support::finish();}

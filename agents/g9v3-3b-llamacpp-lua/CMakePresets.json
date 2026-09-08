@@ -1,0 +1,10 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {"name":"cpu-release","displayName":"Portable CPU Release","generator":"Ninja","binaryDir":"${sourceDir}/build/${presetName}","cacheVariables":{"CMAKE_BUILD_TYPE":"Release","GGML_NATIVE":"OFF","GGML_CPU":"ON","G9_BUILD_TESTS":"ON"}},
+    {"name":"native-release","displayName":"Native CPU Release","inherits":"cpu-release","binaryDir":"${sourceDir}/build/${presetName}","cacheVariables":{"GGML_NATIVE":"ON"}}
+  ],
+  "buildPresets": [{"name":"cpu-release","configurePreset":"cpu-release"},{"name":"native-release","configurePreset":"native-release"}],
+  "testPresets": [{"name":"cpu-release","configurePreset":"cpu-release","output":{"outputOnFailure":true}},{"name":"native-release","configurePreset":"native-release","output":{"outputOnFailure":true}}]
+}
