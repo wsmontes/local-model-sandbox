@@ -1,0 +1,7 @@
+/build/
+/models/*.gguf
+/third_party/llama.cpp/*
+!/third_party/llama.cpp/.gitkeep
+/third_party/lua/*
+!/third_party/lua/.gitkeep
+*.log

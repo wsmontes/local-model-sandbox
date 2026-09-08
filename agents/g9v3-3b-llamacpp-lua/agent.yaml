@@ -1,0 +1,18 @@
+schema_version: 1
+name: g9v3-3b-llamacpp-lua
+version: 0.1.0
+execution_mode: local
+runtime: llama.cpp+lua
+entrypoint: ./run.sh
+contract_version: 1
+model:
+  provider: ai9stars
+  name: G9v3-3B
+environment: []
+tags:
+  - cpp
+  - lua
+  - llama.cpp
+  - gguf
+  - offline
+  - coding-agent
