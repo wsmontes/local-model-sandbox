@@ -1,0 +1,12 @@
+schema_version: 1
+name: template-agent
+version: 0.1.0
+execution_mode: local
+runtime: custom
+entrypoint: ./run.sh
+contract_version: 1
+model:
+  provider: unspecified
+  name: unspecified
+environment: []
+tags: []
