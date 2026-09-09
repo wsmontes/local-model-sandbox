@@ -8,4 +8,4 @@ if [ ! -x "$BIN" ]; then
   echo "Build first: ./build.sh $PRESET -DLUA_DIR=/path/to/lua-5.4.9/src -DLLAMA_CPP_DIR=/path/to/llama.cpp" >&2
   exit 127
 fi
-exec "$BIN" --agent-root "$ROOT" "$@"
+exec "$BIN" "$@" --agent-root "$ROOT"
